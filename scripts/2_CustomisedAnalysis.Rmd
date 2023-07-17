@@ -1,0 +1,106 @@
+---
+title: "Customised analysis"
+author: "Arpan Kumar Basak"
+date: "2023-07-09"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Hypergeometric test for Enrichment analysis
+
+Lets make a random contingency table in which we have 12671 genes, among which 643 genes are deferentially expressed. For a given pathway (gene set) there are 170 genes. Lets make random contingency table.
+
+```{r Hyper, echo=TRUE}
+
+deTable <-  matrix(c(28, 142, 501, 12000),
+            nrow = 2,
+            dimnames = list(DE=c("yes","no"),
+                            PathwayGenes=c("in","out")))
+              
+deTable
+```
+
+Now form the contingency table we estimate whether genes in our gene set is statistically supported.
+
+```{r statisticaltest, echo=TRUE}
+
+fisher.test(deTable, alternative = "greater") # Enrichment
+
+```
+
+The gene ratio here is the odds ratio and the statistical significance is provided. One can iterate this over different pathways and estimate the statistical support for each by performing multiple hypothesis correction.
+
+Alternatively one can perform gene enrichment score by cumulative sum of log~2~FC multiplied by cumulative sum of -log~10~p value. If you have DEGs then this type of analysis should give you a basis to select the top 10 pathways enriched upon experimental perturbation.
+
+$$| log2FoldChange * -log10(p.adjust) |$$
+
+## Read the expression profile of the genes
+
+```{r Input, echo=TRUE}
+require(tidyverse)
+df <- read.delim2("./data/Hou.et.al.txt", header = TRUE, row.names = 1, sep = "\t")
+load("./gene_set_for_wounding.RData")
+
+case_in <- "SC_Root"
+
+id_deg <- str_detect(colnames(df), case_in)
+lfc_mat <- df[,id_deg]
+colnames(lfc_mat) <- str_replace_all(colnames(lfc_mat), paste0("\\.", case_in), "")
+degs <- lfc_mat %>% dplyr::filter(abs(as.numeric(`log2FC`)) >= 1 & as.numeric(`FDR`) <= 0.05)
+
+```
+
+```{r Hypergeometric test, echo=TRUE}
+# Lets estimate our parameters for hypergeometric test
+N <- nrow(lfc_mat)
+n <- nrow(degs)
+
+m <- length(gs1)
+k <- nrow(degs[row.names(degs) %in% gs1,])
+
+deTable <-  matrix(c(k, m-k, n-k, N+k-n-m),
+            nrow = 2,
+            dimnames = list(DE=c("yes","no"),
+                            PathwayGenes=c("in","out")))
+              
+deTable
+(fstat <- fisher.test(deTable, alternative = "greater")) # Enrichment
+```
+### Enrinchment score calculation
+
+Here we calculate the enrichment score for the genes that are present within the gene set of `Response to wounding`.
+```{r Enrichment score,echo=TRUE}
+across <- lfc_mat[gs1, ] %>% 
+  summarise(enrichment_score = abs(sum(as.numeric(log2FC))) * sum(-log10(as.numeric(FDR))))
+
+within <- lfc_mat[gs1, ] %>% 
+  dplyr::filter(abs(as.numeric(`log2FC`)) >= 1 & as.numeric(`FDR`) <= 0.05) %>% 
+  summarise(enrichment_score = abs(sum(as.numeric(log2FC))) * sum(-log10(as.numeric(FDR))))
+
+within/across * 100
+```
+
+### Summarising the customised analysis
+
+Now lets plot the summarized statistics from the hypergeometric analysis, we are interested to see the distribution of gene expression and those that are in the gene list.
+```{r Plotting the customised analysis, echo=TRUE, fig.align='center'}
+lfc_mat %>% 
+  mutate(sig = abs(as.numeric(`log2FC`)) >= 1 & as.numeric(`FDR`) <= 0.05,
+         gene_in = row.names(.) %in% gs1,
+         log2FC = as.numeric(log2FC), FDR = -log10(as.numeric(FDR))) %>% 
+ggplot(aes(x = log2FC, y = FDR)) +
+  ggtitle(paste0("Hypergeometric test: GeneRatio (Odds Ratio) = ", round(fstat$estimate, 3),"; -log10(p) = ", round(-log10(fstat$p.value), 3))) +
+  geom_hline(yintercept = -log10(0.05), colour = "darkred", lty = "dashed") +
+  geom_vline(xintercept = c(-1, 1), colour = "darkred", lty = "dashed") +
+  geom_point(aes(size = (sig), colour = gene_in, alpha = (sig & gene_in)), shape = 16) +
+  scale_alpha_manual(values = c(`TRUE` = 0.7, `FALSE` = 0.3), labels = c(`TRUE` = "FDR ≤ 0.05 & |LFC| ≥ 1", `FALSE` = "")) +
+  scale_size_manual(values = c(`TRUE` = 2, `FALSE` = 0.7), labels = c(`TRUE` = "FDR ≤ 0.05 & |LFC| ≥ 1", `FALSE` = "")) +
+  scale_colour_manual(values = c(`TRUE` = "coral", `FALSE` = "black"), labels = c(`TRUE` = "Response to wounding", `FALSE` = "Others")) +
+  theme_classic() +
+  labs(x= "LFC", y = "-log10(p.adj)", colour = "", size = "", alpha = "")
+
+```

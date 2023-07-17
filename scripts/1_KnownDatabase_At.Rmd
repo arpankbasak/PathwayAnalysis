@@ -1,0 +1,247 @@
+---
+title: "Pathway Analysis"
+author: "Arpan Kumar Basak"
+date: "2023-07-09"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+In this module, we will learn how we can quickly analyse gene expression data to summarise the pathway enrichment analysis, using already published tools. This is a faster way for those databases that are well documented in `Org.Db` package. Please note that customized analysis is required for the transcriptomes that are not present in this database.
+
+The source of the dataset is from the following paper, we investigate the impact of root dwelling microbes on plants cultivated in lower photosynthetic active radiation:
+[A microbiota–root–shoot circuit favours Arabidopsis growth over defence under suboptimal light](https://www.nature.com/articles/s41477-021-00956-4)
+
+## Install Dependencies
+
+```{r, echo=TRUE, results='hide', background=TRUE}
+pkgs <- c("BiocManager", "tidyverse", "ggridges")
+# install.packages(pkgs)
+lapply(pkgs, require, character.only = TRUE)
+
+# Bioconductor packages
+org <- "org.At.tair.db" # For arabidopsis
+pkgs_bc <- c("clusterProfiler", "enrichplot", "pathview", org, "DOSE")
+# lapply(pkgs_bc, install, character.only = TRUE)
+lapply(pkgs_bc, require, character.only = TRUE)
+
+```
+## Read the expression profile of the genes
+
+```{r Input, echo=TRUE}
+df <- read.delim2("./data/Hou.et.al.txt", header = TRUE, row.names = 1, sep = "\t")
+case_in <- "SC_Root"
+id_deg <- str_detect(colnames(df), case_in)
+lfc_mat <- df[,id_deg]
+colnames(lfc_mat) <- str_replace_all(colnames(lfc_mat), paste0("\\.", case_in), "")
+
+# degs <- lfc_mat %>% dplyr::filter(abs(as.numeric(`log2FC`)) >= 1 & as.numeric(`FDR`) <= 0.05) # Filter the ones that are significant
+gene_list <- as.numeric(lfc_mat$log2FC)
+names(gene_list) <- row.names(lfc_mat)
+gene_list <- na.omit(gene_list) %>% sort(., decreasing = TRUE)
+
+```
+
+## Gene Set Enrichment
+
+The package `clusterProfiler` provides onle line command to perform GSEA analysis.
+
+```{r GSE, echo=TRUE}
+
+# One line for GSE
+gse <- clusterProfiler::gseGO(geneList = gene_list, 
+             ont ="ALL", 
+             keyType = "TAIR", 
+             nPerm = 10000, 
+             minGSSize = 3, 
+             maxGSSize = 800, 
+             pvalueCutoff = 0.05, 
+             verbose = TRUE, 
+             OrgDb = org, 
+             pAdjustMethod = "none")
+
+```
+## Representating GSE analysis
+
+Lets see if our gene ontology terms corresponds to some biological function.
+
+```{r dotplot, echo=TRUE, fig.align='center'}
+
+dotplot(gse, 
+        showCategory = 10, split = ".sign") + 
+  facet_grid(.~.sign)
+
+```
+
+## Representating Enrichment Map
+
+Lets explore the top 5 categories in GO term.
+
+```{r enrichmentMap, echo=TRUE, fig.align='center'}
+
+emapplot(pairwise_termsim(gse), showCategory = 10)
+
+```
+
+
+## Representating Enrichment Map
+
+Now lets look at the regulatory network of the gene set.
+
+```{r network, echo=TRUE, fig.align='center', fig.height=8, fig.width=8}
+
+cnetplot(gse, 
+         categorySize = "pvalue", 
+         foldChange = gene_list, 
+         showCategory = 2)
+
+```
+
+
+## Representating Enrichment Map
+
+Lets see the distibution of the `p-values` for the corresponding pathways.
+```{r distribution, echo=TRUE, fig.align='center'}
+require(ggridges)
+ridgeplot(gse) + 
+  labs(x = "Gene enrichment")
+
+```
+
+## Gene Set Enrichment
+
+This is the most interesting plot where you can see the expression pattrerns of the genes on the ranked list. You can specifically trace the running enrichment score and understand the consistency of gene expression of the corresponding pathway.
+```{r Rankplot, echo=TRUE, fig.align='center'}
+
+gseaplot(gse, by = "all", title = gse$Description[1], geneSetID = 1)
+gs1 <- unlist(str_split(gse$core_enrichment[1], "/"))
+save(list = "gs1", file = "./gene_set_for_wounding.RData")
+```
+
+
+## KEGG pathway analysis
+
+Now, lets dive into the the pathway analysis using the KEGG database. Here, we have to first change the id that is compatible with the KEGG database. We will be using `bitr` function to fetch the corresponding `ENTREZID` from the `TAIR` id.  
+
+```{r KEGG, echo=TRUE}
+
+# Obtain the gene list for KEGG
+keg_gene_list <- as.numeric(lfc_mat$log2FC)
+names(keg_gene_list) <- row.names(lfc_mat)
+
+# Convert gene IDs for gseKEGG function
+# We will lose some genes here because not all IDs will be converted
+ids <- bitr(names(keg_gene_list), 
+            fromType = "TAIR", 
+            toType = "ENTREZID", 
+            OrgDb = org.At.tair.db)
+
+# Remove duplicate IDS (here I use "TAIR", but it should be whatever was selected as keyType)
+dedup_ids = ids[!duplicated(ids[c("TAIR")]), ]
+
+# Create a new dataframe df_keg which has only the genes which were successfully mapped using the bitr function above
+df_keg <- lfc_mat[row.names(lfc_mat) %in% dedup_ids$TAIR, ]
+
+# Create a new column in df_keg with the corresponding ENTREZ IDs
+df_keg$Y <- dedup_ids$ENTREZID
+
+# Create a vector of the gene unuiverse
+kegg_gene_list <- as.numeric(df_keg$log2FC)
+
+# Name vector with ENTREZ ids
+names(kegg_gene_list) <- df_keg$Y
+
+# omit any NA values 
+kegg_gene_list <- na.omit(kegg_gene_list)
+
+# sort the list in decreasing order (required for clusterProfiler) for ranking
+kegg_gene_list <- sort(kegg_gene_list, decreasing = TRUE)
+
+# Run the KEGG enrichment
+kegg_org <- "ath" # Note the short form of the organism
+kkg <- gseKEGG(geneList     = kegg_gene_list,
+               organism     = kegg_org,
+               nPerm        = 10000,
+               minGSSize    = 3,
+               maxGSSize    = 800,
+               pvalueCutoff = 0.05,
+               pAdjustMethod = "none",
+               keyType       = "ncbi-geneid") # Keytype is 
+
+```
+## KEGG pathway enrichment
+
+Here we see the transcriptional reprogramming in pathways.
+```{r KEGGEA, echo=TRUE,  fig.align='center', fig.height=18, fig.width=10}
+dotplot(kkg, showCategory = 10, title = "Enriched Pathways" , split=".sign") + 
+  facet_grid(.~.sign)
+
+```
+
+## KEGG network plot for identification of the gene expression dependencies
+
+```{r Netplot, echo=TRUE, fig.align='center', fig.height=18, fig.width=10}
+
+emapplot(pairwise_termsim(kkg))
+
+```
+
+## KEGG network plot for the pathway specifics
+
+```{r NetworkPlot, echo=TRUE, fig.align='center', fig.height=8, fig.width=8}
+
+cnetplot(kkg)
+
+```
+
+## Distribution of differentailly expressed genes
+
+```{r DistributionKEGG, echo=TRUE, fig.align='center'}
+
+ridgeplot(kkg) + labs(x = "Enrichment")
+
+```
+
+## GSEA Plot for KEGG terms
+
+The enrichment analysis shows the genes corresponding to the __flavonoid biosynthesis__ are enriched. Please note that the `1` refers to the index of flavonoid biosynthesis. You may explore other pathways by changing this.
+
+```{r GSEA Plot, echo=TRUE, fig.align='center'}
+gseaplot(kkg, by = "all", title = kkg$Description[1], geneSetID = 1)
+
+```
+
+## Pathway snapshot using pathview
+
+Finally we summarise the KEGG pathway correspnding to __flavanoid biosynthesis__ and investigate the gene expression patterns of the pathway components.
+
+```{r Pathview, fig.align='center', echo=TRUE}
+
+require(pathview)
+
+# Produce the native KEGG plot (PNG)
+at_pv <- pathview(gene.data=kegg_gene_list, 
+                pathway.id="ath00941", 
+                species = kegg_org, 
+                mid = "white", 
+                high = "darkgreen", 
+                low = "darkmagenta", kegg.dir = "./kegg_out/")
+
+knitr::include_graphics("./ath00941.pathview.png")
+
+```
+
+
+### END
+
+> 1. You can download your favourite dataset (LogFC table). Please note that the transcriptome should be within the Org.db.
+
+> 2. Find the top 5 pathways that are enriched upon experimental perturbation by using both KEGG and GO term analyses.
+
+> 3. Check the interdependencies of the genes that are expressed within the top 5 pathways.
+
+```{r end, echo=TRUE}
+sessionInfo()
+```
